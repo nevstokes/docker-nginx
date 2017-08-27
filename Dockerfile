@@ -1,0 +1,127 @@
+FROM nevstokes/nginx:src AS src
+
+
+FROM alpine:3.6 AS build
+
+COPY --from=src nginx.tar.gz /
+
+ENV NGINX_VERSION=1.13.4
+
+RUN set -euxo pipefail \
+  \
+  && CONFIG="\
+    --prefix=/etc/nginx \
+    --sbin-path=/usr/sbin/nginx \
+    --conf-path=/etc/nginx/nginx.conf \
+    --error-log-path=/var/log/nginx/error.log \
+    --http-log-path=/var/log/nginx/access.log \
+    --http-client-body-temp-path=/var/cache/nginx/client_temp \
+    --modules-path=/usr/lib/nginx/modules \
+    --pid-path=/var/run/nginx.pid \
+    --lock-path=/var/run/nginx.lock \
+    --user=nginx \
+    --group=nginx \
+    --with-http_auth_request_module \
+    --with-http_gzip_static_module \
+    --with-http_perl_module=dynamic \
+    --with-http_realip_module \
+    --with-http_secure_link_module \
+    --with-http_slice_module \
+    --with-http_ssl_module \
+    --with-http_stub_status_module \
+    --with-compat \
+    --with-file-aio \
+    --with-http_v2_module \
+    --with-stream \
+    --with-stream_ssl_module \
+    --with-stream_ssl_preread_module \
+    --with-stream_realip_module \
+    --with-threads \
+  " \
+  \
+  \
+  && apk --update add \
+    gcc \
+    gnupg \
+    libc-dev \
+    libressl-dev \
+    linux-headers \
+    make \
+    pcre-dev \
+    perl-dev \
+    zlib-dev \
+  \
+  && mkdir -p /usr/src \
+  && tar -zxC /usr/src -f nginx.tar.gz \
+  \
+  && cd /usr/src/nginx-$NGINX_VERSION \
+  && ./configure $CONFIG \
+  && make -j$(getconf _NPROCESSORS_ONLN) \
+  && make install \
+  \
+  && install -m755 objs/ngx_http_perl_module.so /usr/lib/nginx/modules/ngx_http_perl_module.so \
+  \
+  && strip /usr/sbin/nginx* \
+  && strip /usr/lib/nginx/modules/*.so
+
+
+FROM alpine:3.6 AS libs
+
+COPY --from=build /usr/sbin/nginx /usr/sbin/
+COPY --from=build /usr/lib/nginx/modules/*.so /usr/lib/nginx/modules/
+
+RUN set -euxo pipefail \
+    \
+    && echo '@community http://dl-cdn.alpinelinux.org/alpine/edge/community' >> /etc/apk/repositories \
+    && apk --update add upx@community \
+    \
+    && scanelf --nobanner --needed /usr/sbin/nginx| awk '{ gsub(/,/, "\nso:", $2); print "so:" $2 }' | xargs apk add \
+    \
+    && upx -9 /usr/sbin/nginx \
+    && apk del --purge apk-tools upx \
+    \
+    && tar -czf lib.tar.gz /lib/*.so.* \
+    && tar -czf usr-lib.tar.gz /usr/lib/
+
+
+FROM busybox
+
+COPY --from=libs /usr/sbin/nginx /usr/sbin/
+COPY --from=libs /usr/lib/nginx/modules/*.so /usr/lib/nginx/modules/
+COPY --from=libs *.tar.gz /
+
+ARG BUILD_DATE
+ARG VCS_REF
+ARG VCS_URL
+
+EXPOSE 80 443
+
+ENTRYPOINT ["nginx"]
+CMD ["-g", "daemon off;"]
+
+HEALTHCHECK CMD ["wget", "-qs", "localhost/nginx_status"]
+
+RUN set -euxo pipefail \
+    \
+    && addgroup -S nginx \
+    && adduser -h /var/cache/nginx -s /sbin/nologin -D -S -G nginx nginx \
+    \
+    && tar -xzf /lib.tar.gz \
+    && tar -xzf /usr-lib.tar.gz \
+    \
+    && mkdir /etc/nginx \
+    && mkdir -p /var/log/nginx \
+    \
+    # forward request and error logs to docker log collector
+    && ln -sf /dev/stdout /var/log/nginx/access.log \
+    && ln -sf /dev/stderr /var/log/nginx/error.log \
+    \
+    && rm -rf *.tar.gz \
+    && find /bin -type f | grep -Ev "/(sh|wget)" | xargs rm -rf
+
+LABEL maintainer="Nev Stokes <mail@nevstokes.com>" \
+      description="Simple nginx image" \
+      org.label-schema.build-date=$BUILD_DATE \
+      org.label-schema.schema-version="1.0" \
+      org.label-schema.vcs-ref=$VCS_REF \
+      org.label-schema.vcs-url=$VCS_URL

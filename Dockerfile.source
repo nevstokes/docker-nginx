@@ -1,0 +1,29 @@
+FROM alpine:3.6 AS src
+
+ENV NGINX_VERSION=1.13.4
+
+RUN set -euxo pipefail \
+    \
+    && apk --update add curl gnupg \
+    \
+    && curl -fSL https://nginx.org/download/nginx-$NGINX_VERSION.tar.gz -o nginx.tar.gz \
+    && curl -fSL https://nginx.org/download/nginx-$NGINX_VERSION.tar.gz.asc -o nginx.tar.gz.asc \
+    \
+    && gpg --keyserver ha.pool.sks-keyservers.net --recv-keys B0F4253373F8F6F510D42178520A9993A1C052F8 \
+    && gpg --batch --verify nginx.tar.gz.asc nginx.tar.gz
+
+
+FROM scratch
+
+COPY --from=src nginx.tar.gz .
+
+ARG BUILD_DATE
+ARG VCS_REF
+ARG VCS_URL
+
+LABEL maintainer="Nev Stokes <mail@nevstokes.com>" \
+    description="Verified nginx source" \
+    org.label-schema.build-date=$BUILD_DATE \
+    org.label-schema.schema-version="1.0" \
+    org.label-schema.vcs-ref=$VCS_REF \
+    org.label-schema.vcs-url=$VCS_URL \
